@@ -50,11 +50,11 @@ func (s *StandAloneStorage) Write(ctx *kvrpcpb.Context, batch []storage.Modify) 
 	writeBatch := new(engine_util.WriteBatch)
 	//Distinguish the type of modify (Put or Delete)
 	for _, modify := range batch{
-		switch v := modify.Data.(type){
+		switch modify.Data.(type){
 		case storage.Put:
-			writeBatch.SetCF(v.Cf,v.Key,v.Value)
+			writeBatch.SetCF(modify.Cf(),modify.Key(),modify.Value())
 		case storage.Delete:
-			writeBatch.DeleteCF(v.Cf,v.Key)
+			writeBatch.DeleteCF(modify.Cf(),modify.Key())
 		}
 	}
 	//save modify
