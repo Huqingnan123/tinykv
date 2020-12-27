@@ -86,7 +86,7 @@ func (server *Server) RawScan(_ context.Context, req *kvrpcpb.RawScanRequest) (*
 	response := &kvrpcpb.RawScanResponse{}
 	reader, _ := server.storage.Reader(req.Context)
 	defer reader.Close()
-	////call IterCF to get the iter and scan the whole CF
+	//call IterCF to get the iter and scan the whole CF
 	iter := reader.IterCF(req.Cf)
 	defer iter.Close()
 	iter.Seek(req.StartKey)

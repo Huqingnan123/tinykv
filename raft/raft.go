@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"math/rand"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -130,11 +131,12 @@ type Raft struct {
 
 	// the leader id
 	Lead uint64
-
 	// heartbeat interval, should send
 	heartbeatTimeout int
 	// baseline of election interval
 	electionTimeout int
+	//random value of election interval
+	randomElectionTimeout int
 	// number of ticks since it reached last heartbeatTimeout.
 	// only leader keeps heartbeatElapsed.
 	heartbeatElapsed int
@@ -163,7 +165,30 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	return nil
+	// 2020-12-23: doing project2Aa
+	raft := &Raft{
+		id:               c.ID,
+		Term:             0,                       //InitialTerm is 0
+		Vote:             None,
+		RaftLog:          newLog(c.Storage),
+		Prs:              make(map[uint64]*Progress),
+		State:            StateFollower,           //InitialState is follower
+		votes:            make(map[uint64]bool),
+		Lead:             None,                    //InitialLeader is None
+		heartbeatTimeout: c.HeartbeatTick,
+		electionTimeout:  c.ElectionTick,          //other members are 0 automatically
+		heartbeatElapsed: 0,
+		electionElapsed:  0,
+		leadTransferee:   0,
+		PendingConfIndex: 0,                       //Will be used in 3a
+	}
+	for _, peer := range c.peers {
+		raft.votes[peer] = false
+		raft.Prs[peer] = &Progress{}
+	}
+	//create a random value in [baseElectionTimeout, 2*baseElectionTimeout - 1]
+	raft.randomElectionTimeout = raft.electionTimeout + rand.Intn(raft.electionTimeout)
+	return raft
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
@@ -176,39 +201,292 @@ func (r *Raft) sendAppend(to uint64) bool {
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
+	// 2020-12-23: doing project2Aa
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgHeartbeat,
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
+	}
+	//push message into r.msgs
+	r.msgs = append(r.msgs, msg)
+}
+
+//sendHeartbeatResponse is the followers' response of Leader's Heartbeat
+func (r *Raft) sendHeartbeatResponse(to uint64, reject bool) {
+	// 2020-12-23: doing project2Aa
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgHeartbeatResponse,
+		To:      to,
+		From:    r.id,
+		Term:    r.Term,
+		Reject:  reject,
+	}
+	//push message into r.msgs
+	r.msgs = append(r.msgs, msg)
+}
+
+//sendRequestVote sends a vote request to the given peer
+func (r *Raft) sendRequestVote(to uint64) {
+	// 2020-12-23: doing project2Aa
+	lastIndex := r.RaftLog.LastIndex()
+	lastLogTerm, _ := r.RaftLog.Term(lastIndex)
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgRequestVote,
+		To:      to,
+		From:    r.id,
+		Term:    r.Term,
+		LogTerm: lastLogTerm,
+		Index:   lastIndex,
+	}
+	//push message into r.msgs
+	r.msgs = append(r.msgs, msg)
+}
+
+//sendRequestVoteResponse is the followers' response of RequestVote to them
+func (r *Raft) sendRequestVoteResponse(to uint64, reject bool) {
+	// 2020-12-23: doing project2Aa
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgRequestVoteResponse,
+		To:      to,
+		From:    r.id,
+		Term:    r.Term,
+		Reject:  reject,
+	}
+	//push message into r.msgs
+	r.msgs = append(r.msgs, msg)
 }
 
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
+	// 2020-12-23: doing project2Aa
+	switch r.State {
+	case StateFollower:
+		r.electionElapsed++
+		//If an election timeout happened, pass 'MessageType_MsgHup' to its Step method and start a new election.
+		if r.electionElapsed >= r.randomElectionTimeout {
+			r.electionElapsed = 0
+			r.Step(pb.Message{MsgType: pb.MessageType_MsgHup, From: r.id})
+		}
+	case StateCandidate:
+		r.electionElapsed++
+		//If an election timeout happened, pass 'MessageType_MsgHup' to its Step method and start a new election.
+		if r.electionElapsed >= r.randomElectionTimeout {
+			r.electionElapsed = 0
+			r.Step(pb.Message{MsgType: pb.MessageType_MsgHup, From: r.id})
+		}
+	case StateLeader:
+		r.heartbeatElapsed++
+		//leader sends a heartbeat signal to its followers.
+		if r.heartbeatElapsed >= r.heartbeatTimeout {
+			r.heartbeatElapsed = 0
+			r.Step(pb.Message{MsgType: pb.MessageType_MsgBeat, From: r.id})
+		}
+	}
 }
 
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
+	// 2020-12-23: doing project2Aa
+	// When leader's term >= r.term, recognize other legal leader and r become a follower again
+	r.State = StateFollower
+	r.Term = term
+	r.Vote = None
+	r.Lead = lead
 }
 
 // becomeCandidate transform this peer's state to candidate
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
+	// 2020-12-23: doing project2Aa
+	r.State = StateCandidate
+	r.Term = r.Term + 1
+	r.Lead = None
+	r.Vote = r.id
+	for peer := range r.votes {
+		if peer == r.id {
+			r.votes[peer] = true
+		} else {
+			r.votes[peer] = false
+		}
+	}
+
 }
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
-	// NOTE: Leader should propose a noop entry on its term
+	// NOTE: Leader should propose a noop entry on its term !!!
+	// 2020-12-23: doing project2Aa
+	r.State = StateLeader
+	r.Lead = r.id
+	//noop entry
+	for peer := range r.Prs {
+		r.Prs[peer] = &Progress{}
+	}
+	// r.RaftLog.entries = append(r.RaftLog.entries, pb.Entry{Term: r.Term, Index: r.RaftLog.LastIndex()})
 }
 
 // Step the entrance of handle message, see `MessageType`
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
+	// 2020-12-23: doing project2Aa
+	// r.term left behind, listen to others directly, update itself
+	if m.Term > r.Term {
+		if m.MsgType == pb.MessageType_MsgAppend || m.MsgType == pb.MessageType_MsgHeartbeat {
+			r.becomeFollower(m.Term, m.From)
+		} else {
+			r.becomeFollower(m.Term, None)
+		}
+	}
+	// different state has different messages and actions
 	switch r.State {
 	case StateFollower:
+		r.stepInStateFollower(m)
 	case StateCandidate:
+		r.stepInStateCandidate(m)
 	case StateLeader:
+		r.stepInStateLeader(m)
 	}
 	return nil
+}
+
+func (r *Raft) stepInStateFollower(m pb.Message) {
+	// 2020-12-23: doing project2Aa
+	switch m.MsgType {
+	case pb.MessageType_MsgHup:
+		r.startNewElection()
+	case pb.MessageType_MsgBeat:
+	case pb.MessageType_MsgAppend:
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgAppendResponse:
+	case pb.MessageType_MsgRequestVote:
+		r.handleRequestVote(m)
+	case pb.MessageType_MsgRequestVoteResponse:
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
+	case pb.MessageType_MsgHeartbeatResponse:
+	}
+}
+
+func (r *Raft) stepInStateCandidate(m pb.Message) {
+	// 2020-12-23: doing project2Aa
+	switch m.MsgType {
+	case pb.MessageType_MsgHup:
+		r.startNewElection()
+	case pb.MessageType_MsgBeat:
+	case pb.MessageType_MsgAppend:
+		//r.term left behind, listen to others directly
+		if m.Term >= r.Term {
+			r.becomeFollower(m.Term, m.From)
+		}
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgAppendResponse:
+	case pb.MessageType_MsgRequestVote:
+		r.handleRequestVote(m)
+	case pb.MessageType_MsgRequestVoteResponse:
+		r.handleRequestVoteResponse(m)
+	case pb.MessageType_MsgSnapshot:
+		if m.Term >= r.Term {
+			r.becomeFollower(m.Term, m.From)
+		}
+		r.handleSnapshot(m)
+	case pb.MessageType_MsgHeartbeat:
+		if m.Term >= r.Term {
+			r.becomeFollower(m.Term, m.From)
+		}
+		r.handleHeartbeat(m)
+	case pb.MessageType_MsgHeartbeatResponse:
+	}
+}
+
+func (r *Raft) stepInStateLeader(m pb.Message) {
+	// 2020-12-23: doing project2Aa
+	switch m.MsgType {
+	case pb.MessageType_MsgHup:
+	case pb.MessageType_MsgBeat:
+		r.broadcastHeartbeat()
+	case pb.MessageType_MsgAppend:
+		r.handleAppendEntries(m)
+	case pb.MessageType_MsgAppendResponse:
+	case pb.MessageType_MsgRequestVote:
+		r.handleRequestVote(m)
+	case pb.MessageType_MsgRequestVoteResponse:
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
+	case pb.MessageType_MsgHeartbeat:
+		r.handleHeartbeat(m)
+	case pb.MessageType_MsgHeartbeatResponse:
+	}
+}
+
+// startNewElection begins a new election by broadcasting vote requests
+func (r *Raft) startNewElection() {
+	// 2020-12-23: doing project2Aa
+	r.becomeCandidate()
+	//reset ticks()
+	r.heartbeatElapsed = 0
+	r.electionElapsed = 0
+	r.randomElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
+	if len(r.votes) == 1 {
+		r.becomeLeader()
+		return
+	}
+	for peer := range r.Prs {
+		if peer != r.id {
+			r.sendRequestVote(peer)
+		}
+	}
+}
+
+//broadcastHeartbeat send heartbeat to every peer of this leader
+func (r *Raft) broadcastHeartbeat() {
+	// 2020-12-23: doing project2Aa
+	for peer := range r.Prs {
+		if peer != r.id {
+			r.sendHeartbeat(peer)
+		}
+	}
+}
+
+//handleRequestVote is the action of follower to Vote for others
+func (r *Raft) handleRequestVote(m pb.Message) {
+	// 2020-12-23: doing project2Aa
+	//m's term behind or outRange or r has already voted (Can't vote it!!!)
+	lastIndex := r.RaftLog.LastIndex()
+	lastLogTerm, _ := r.RaftLog.Term(lastIndex)
+	outRange := lastLogTerm > m.LogTerm || (lastLogTerm == m.LogTerm && lastIndex > m.Index)
+	if m.Term >= r.Term && !outRange && (r.Vote == None || r.Vote == m.From) {
+		r.Vote = m.From
+		r.sendRequestVoteResponse(m.From, false)
+	} else {
+		r.sendRequestVoteResponse(m.From, true)
+	}
+}
+
+//handleRequestVoteResponse is the action of candidate to judge whether it can be a leader
+func (r *Raft) handleRequestVoteResponse(m pb.Message) {
+	// 2020-12-23: doing project2Aa
+	if m.Term < r.Term {
+		return
+	}
+	r.votes[m.From] = !m.Reject
+	approval := 0
+	for _, val := range r.votes {
+		if val {
+			approval++
+		}
+	}
+	// when approvals are bigger than half of its peers, becomeLeader!
+	// when oppositions are bigger than half of its peers, becomeFollower ???
+	if approval > len(r.Prs)/2 {
+		r.becomeLeader()
+	}
 }
 
 // handleAppendEntries handle AppendEntries RPC request
@@ -219,6 +497,15 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
+	//2020-12-22: doing project2Aa
+	if m.Term != None && m.Term < r.Term {
+		r.sendHeartbeatResponse(m.From, true)
+		return
+	}
+	//Confirm its leader and become a follower
+	r.Lead = m.From
+	r.becomeFollower(m.Term, m.From)
+	r.sendHeartbeatResponse(m.From, false)
 }
 
 // handleSnapshot handle Snapshot RPC request
@@ -235,3 +522,4 @@ func (r *Raft) addNode(id uint64) {
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
 }
+

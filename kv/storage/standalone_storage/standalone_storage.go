@@ -26,11 +26,13 @@ func NewStandAloneStorage(conf *config.Config) *StandAloneStorage {
 
 func (s *StandAloneStorage) Start() error {
 	// Your Code Here (1).
+	//add nothing
 	return nil
 }
 
 func (s *StandAloneStorage) Stop() error {
 	// Your Code Here (1).
+	//call badgerDB's Close()
 	err := s.aloneDB.Close()
 	if err != nil{
 		return err
