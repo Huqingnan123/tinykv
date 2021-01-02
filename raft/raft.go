@@ -709,6 +709,20 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	}
 }
 
+// Get raft's softState info
+func (r *Raft) softState() *SoftState {
+	return &SoftState{Lead: r.Lead, RaftState: r.State}
+}
+
+// Get raft's hardState info
+func (r *Raft) hardState() pb.HardState {
+	return pb.HardState{
+		Term:   r.Term,
+		Vote:   r.Vote,
+		Commit: r.RaftLog.committed,
+	}
+}
+
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
