@@ -14,7 +14,9 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
@@ -50,26 +52,23 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
+	// firstEntryIndex is the upperbound of the compacted logs(snapshot) !!!
+	// the index of the first log entry that is possibly available via Entries
+	// the index of the first entry in entries []pb.Entry (un-compacted entries)
+	firstEntryIndex uint64
 }
 
 // newLog returns log using the given storage. It recovers the log
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
-	// Your Code Here (2A).
-	// 2020-12-23 : doing project2Aa
-	low, err := storage.FirstIndex()
+	//! Your Code Here (2A).
+	lo, _ := storage.FirstIndex()
+	hi, _ := storage.LastIndex()
+	entries, err := storage.Entries(lo, hi+1)
 	if err != nil {
 		panic(err)
 	}
-	high, err := storage.LastIndex()
-	if err != nil {
-		panic(err)
-	}
-	entries, err := storage.Entries(low, high+1)
-	if err != nil {
-		panic(err)
-	}
-	return &RaftLog{storage: storage, entries: entries, stabled: high}
+	return &RaftLog{storage: storage, entries: entries, firstEntryIndex: lo, stabled: hi}
 }
 
 // We need to compact the log entries in some point of time like
@@ -82,35 +81,59 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	if len(l.entries) > 0 {
+		return l.entries[l.stabled - l.entries[0].Index + 1 : len(l.entries)]
+	}
+	return make([]pb.Entry, 0)
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return nil
+	if len(l.entries) > 0 {
+		return l.entries[l.applied - l.firstEntryIndex + 1 : l.committed - l.firstEntryIndex + 1]
+	}
+	return make([]pb.Entry, 0)
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
-	// Your Code Here (2A).
-	// 2020-12-23 : doing project2Aa
+	//! Your Code Here (2A).
 	if len(l.entries) > 0 {
-		return l.entries[0].Index + uint64(len(l.entries)) - 1
+		return l.entries[len(l.entries)-1].Index
 	}
-	idx, err := l.storage.LastIndex()
-	if err != nil {
-		panic(err)
-	}
+	idx, _ := l.storage.LastIndex()
 	return idx
 }
 
-// Term return the term of the entry in the given index
+// LastTerm return the term of the last log entry
+func (l *RaftLog) LastTerm() uint64 {
+	lastTerm, err := l.Term(l.LastIndex())
+	if err != nil {
+		panic(err)
+	}
+	return lastTerm
+}
+
+// Term return the term of the entry in the given index i
 func (l *RaftLog) Term(i uint64) (uint64, error) {
-	// Your Code Here (2A).
-	// 2020-12-23 : doing project2Aa
-	if len(l.entries) > 0 {
-		return l.entries[i - l.entries[0].Index].Term, nil
+	//! Your Code Here (2A).
+	// beyond upperbound
+	if i > l.LastIndex() {
+		return 0, nil
+	}
+	// the target term in un-compacted entries
+	if i >= l.firstEntryIndex && len(l.entries) > 0 {
+		return l.entries[i - l.firstEntryIndex].Term, nil
 	}
 	return l.storage.Term(i)
+}
+
+// Get the offset of the entry in entries[] that will be appended firstly according to the given index i.
+func (l *RaftLog) GetEntryOffset(i uint64) int {
+	offset := int(i - l.firstEntryIndex)
+	if offset < 0 {
+		panic("Error! Invalid offset in r.RaftLog.entries!")
+	}
+	return offset
 }
