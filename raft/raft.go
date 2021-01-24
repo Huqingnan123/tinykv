@@ -188,19 +188,25 @@ func newRaft(c *Config) *Raft {
 		leadTransferee:   0,
 		PendingConfIndex: 0,
 	}
+	//create a random value in [baseElectionTimeout, 2*baseElectionTimeout - 1]
+	raft.randomElectionTimeout = raft.electionTimeout + rand.Intn(raft.electionTimeout)
+	//Get hardState and confState which are saved
+	//confState will be used in 2b to initialize the peers
+	hardState, confState , _ := c.Storage.InitialState()
+	peers := confState.Nodes
+	if c.peers != nil {
+		peers = c.peers
+	}
 	// generate empty peerID -> Progress map from config
 	lastIndex, _ := c.Storage.LastIndex()
-	for _, peer := range c.peers {
+	for _, peer := range peers {
 		if peer == c.ID {
 			raft.Prs[peer] = &Progress{Next: lastIndex + 1, Match: lastIndex}
 		} else {
 			raft.Prs[peer] = &Progress{Next: lastIndex + 1}
 		}
 	}
-	//create a random value in [baseElectionTimeout, 2*baseElectionTimeout - 1]
-	raft.randomElectionTimeout = raft.electionTimeout + rand.Intn(raft.electionTimeout)
 	//update members according to hardState's info
-	hardState, _ , _ := c.Storage.InitialState()
 	raft.Term, raft.Vote, raft.RaftLog.committed = hardState.GetTerm(), hardState.GetVote(), hardState.GetCommit()
 	return raft
 }
@@ -602,7 +608,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		var rightIndex uint64
 		for i := 0; i < len(r.RaftLog.entries); i++ {
 			if r.RaftLog.entries[i].Term == logTerm {
-				rightIndex = uint64(i) + r.RaftLog.firstEntryIndex
+				rightIndex = uint64(i) + r.RaftLog.FirstIndex()
 				break
 			}
 		}
@@ -622,7 +628,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 			// And update the storage content via change stabled value.
 			// else do nothing (same, no conflict)
 			if logTerm != entry.Term {
-				offset := entry.Index - r.RaftLog.firstEntryIndex
+				offset := entry.Index - r.RaftLog.FirstIndex()
 				r.RaftLog.entries[offset] = *entry
 				r.RaftLog.entries = r.RaftLog.entries[ :offset+1]
 				if r.RaftLog.stabled >= entry.Index {
@@ -660,7 +666,7 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 		}
 		//if there is an entry that matches the same logTerm and the same index,set nextIndex as the index after that
 		if offset > 0 && r.RaftLog.entries[offset - 1].Term == m.LogTerm {
-			r.Prs[m.From].Next = uint64(offset) + r.RaftLog.firstEntryIndex
+			r.Prs[m.From].Next = uint64(offset) + r.RaftLog.FirstIndex()
 		} else {
 			//set this peer's nextIndex as the rightIndex send by peer.
 			r.Prs[m.From].Next = m.Index
@@ -682,17 +688,21 @@ func (r *Raft) leaderCommit() {
 		matchResult = append(matchResult,progress.Match)
 	}
 	sort.Sort(matchResult)
-	midIndex := matchResult[(len(r.Prs) - 1)/2]
-	logTerm, err := r.RaftLog.Term(midIndex)
-	if err != nil {
-		panic(err)
-	}
-	// only log entries in current term can be committed by leader.
-	if logTerm == r.Term && midIndex > r.RaftLog.committed {
-		r.RaftLog.committed = midIndex
-		for peer := range r.Prs {
-			if peer != r.id {
-				r.sendAppend(peer)
+	//get matchResult's midIndex
+	index := matchResult[(len(r.Prs) - 1)/2]
+	// judge whether index is larger than r.RaftLog.committed firstly
+	// then only log entries in current term can be committed by leader.
+	if index > r.RaftLog.committed {
+		logTerm, err := r.RaftLog.Term(index)
+		if err != nil {
+			panic(err)
+		}
+		if logTerm == r.Term {
+			r.RaftLog.committed = index
+			for peer := range r.Prs {
+				if peer != r.id {
+					r.sendAppend(peer)
+				}
 			}
 		}
 	}

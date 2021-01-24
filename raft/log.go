@@ -52,10 +52,6 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
-	// firstEntryIndex is the upperbound of the compacted logs(snapshot) !!!
-	// the index of the first log entry that is possibly available via Entries
-	// the index of the first entry in entries []pb.Entry (un-compacted entries)
-	firstEntryIndex uint64
 }
 
 // newLog returns log using the given storage. It recovers the log
@@ -68,7 +64,15 @@ func newLog(storage Storage) *RaftLog {
 	if err != nil {
 		panic(err)
 	}
-	return &RaftLog{storage: storage, entries: entries, firstEntryIndex: lo, stabled: hi}
+	return &RaftLog{
+		storage: storage,
+		committed: lo - 1,
+		applied: lo - 1,
+		stabled: hi,
+		entries: entries,
+		// Used in 2C
+		pendingSnapshot: &pb.Snapshot{},
+	}
 }
 
 // We need to compact the log entries in some point of time like
@@ -82,18 +86,27 @@ func (l *RaftLog) maybeCompact() {
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
 	if len(l.entries) > 0 {
-		return l.entries[l.stabled - l.entries[0].Index + 1 : len(l.entries)]
+		return l.entries[l.stabled - l.FirstIndex() + 1 : l.LastIndex() - l.FirstIndex() + 1]
 	}
-	return make([]pb.Entry, 0)
+	return nil
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	if len(l.entries) > 0 {
-		return l.entries[l.applied - l.firstEntryIndex + 1 : l.committed - l.firstEntryIndex + 1]
+	if len(l.entries) > 0 && l.applied < l.committed {
+		return l.entries[l.applied - l.FirstIndex() + 1 : l.committed - l.FirstIndex() + 1]
 	}
-	return make([]pb.Entry, 0)
+	return nil
+}
+
+// FirstIndex return the first index of the log entries
+func (l *RaftLog) FirstIndex() uint64 {
+	if len(l.entries) > 0 {
+		return l.entries[0].Index
+	}
+	idx, _ := l.storage.FirstIndex()
+	return idx
 }
 
 // LastIndex return the last index of the log entries
@@ -123,15 +136,15 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 		return 0, nil
 	}
 	// the target term in un-compacted entries
-	if i >= l.firstEntryIndex && len(l.entries) > 0 {
-		return l.entries[i - l.firstEntryIndex].Term, nil
+	if i >= l.FirstIndex() && len(l.entries) > 0 {
+		return l.entries[i - l.FirstIndex()].Term, nil
 	}
 	return l.storage.Term(i)
 }
 
 // Get the offset of the entry in entries[] that will be appended firstly according to the given index i.
 func (l *RaftLog) GetEntryOffset(i uint64) int {
-	offset := int(i - l.firstEntryIndex)
+	offset := int(i - l.FirstIndex())
 	if offset < 0 {
 		panic("Error! Invalid offset in r.RaftLog.entries!")
 	}
