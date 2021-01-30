@@ -577,7 +577,7 @@ func (r *Raft) handlePropose(m pb.Message) {
 	r.Prs[r.id].Match = lastIndex
 	r.Prs[r.id].Next = lastIndex + 1
 	r.broadcastAppend()
-	//- If there is only one node, just commit this entry.
+	// If there is only one node, just commit this entry.
 	if len(r.Prs) == 1 {
 		r.RaftLog.committed = lastIndex
 	}
